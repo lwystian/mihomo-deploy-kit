@@ -440,6 +440,21 @@ class CodeUpdateTests(unittest.TestCase):
         self.assertFalse(kit.sync_code(self.root))
         self.assertFalse((self.root.parent / "project-backups").exists())
 
+    @unittest.skipUnless(os.name == "posix", "恢复后的 Git 可执行位在 Linux CI 验证")
+    def test_restored_scripts_keep_executable_bits_and_clean_git_state(self):
+        instance = deployment(self.root)
+        for name in ("install.sh", "manage.sh"):
+            os.chmod(self.root / name, 0o700)
+        archive, staging = self.root.parent / "backup.tar.gz", self.root.parent / "staging"
+        kit.create_archive(instance.root, archive)
+        staging.mkdir()
+        kit.verify_archive(archive, staging)
+        for name in kit.PROGRAM_FILES:
+            os.replace(staging / name, self.root / name)
+        self.assertEqual(self.git(self.root, "status", "--porcelain", "--untracked-files=no"), "")
+        for name in ("install.sh", "manage.sh"):
+            self.assertEqual((self.root / name).stat().st_mode & 0o777, 0o700)
+
     def test_dirty_code_is_not_overwritten(self):
         self.publish()
         (self.root / "README.md").write_text("my local edits", encoding="utf-8")

@@ -12,6 +12,7 @@ from pathlib import Path
 import secrets
 import socket
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -140,7 +141,11 @@ def run():
         (root / "data").mkdir(mode=0o700)
         kit.private_write(root / "data/active.yaml", kit.dump_yaml(dict(kit.policy(s), rules=["MATCH,REJECT"])))
         def cli(*arguments):
-            return kit.process([str(root / "deploy.sh")] + list(arguments), cwd=str(root), timeout=900)
+            result = subprocess.run([str(root / "deploy.sh")] + list(arguments), cwd=root, timeout=900,
+                                    capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if result.returncode:
+                raise AssertionError("CLI 失败：" + instance.scrub((result.stdout + result.stderr)[-6000:]))
+            return result.stdout
         try:
             instance.bootstrap()
             instance.doctor()

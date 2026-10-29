@@ -646,6 +646,8 @@ def verify_archive(path, extract_to=None):
                     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                     with archive.extractfile(member) as source:
                         private_write(target, source.read())
+                    if member.name in PROGRAM_FILES and member.name.endswith(".sh"):
+                        os.chmod(target, 0o700)
     return True
 
 
