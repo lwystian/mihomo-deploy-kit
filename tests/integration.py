@@ -236,7 +236,9 @@ def run():
             git(publisher, "commit", "-m", "test new updater code")
             git(publisher, "push")
             before_update = json.loads((root / "settings.json").read_text())
-            assert "UPDATED-CODE-EXECUTED" in cli("update")
+            update_output = cli("update")
+            assert "UPDATED-CODE-EXECUTED" in update_output
+            assert [line for line in update_output.splitlines() if line != "UPDATED-CODE-EXECUTED"] == ["检查更新……", "备份配置……", "更新服务……", "更新完成。"]
             assert json.loads((root / "settings.json").read_text()) == before_update
             assert marker.read_text() == "original"
             assert git(root, "rev-parse", "HEAD") == git(publisher, "rev-parse", "HEAD")

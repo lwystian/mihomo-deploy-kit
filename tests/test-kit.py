@@ -171,6 +171,29 @@ class DeploymentTests(unittest.TestCase):
         with tarfile.open(backups[0]) as archive:
             self.assertEqual(archive.extractfile("data/marker").read(), b"current state")
 
+    def test_update_output_is_four_lines_and_still_runs_backup_and_checks(self):
+        def noisy_backup():
+            print("backup path and diagnostic details")
+            return self.root / "backups/test.tar.gz", True
+        def noisy_sync(root):
+            print("commit identifiers and history")
+            return False
+        with mock.patch.object(sys, "argv", ["deploy.sh", "--root", str(self.root), "update"]), mock.patch.object(kit.platform, "system", return_value="Linux"), mock.patch.object(kit.os, "geteuid", return_value=0, create=True), mock.patch.object(kit, "deployment_lock", return_value=contextlib.nullcontext()), mock.patch.object(kit, "sync_code", side_effect=noisy_sync) as sync, mock.patch.object(kit, "Kit", return_value=self.instance), mock.patch.object(self.instance, "backup", side_effect=noisy_backup) as backup, mock.patch.object(self.instance, "compose") as compose, mock.patch.object(self.instance, "up_checked", side_effect=lambda: print("container and port diagnostics")) as check, contextlib.redirect_stdout(io.StringIO()) as output:
+            kit.main()
+        self.assertEqual(output.getvalue().splitlines(), ["检查更新……", "备份配置……", "更新服务……", "更新完成。"])
+        sync.assert_called_once_with(self.root)
+        backup.assert_called_once_with()
+        check.assert_called_once_with()
+        self.assertIn(mock.call("pull", "server", timeout=900), compose.call_args_list)
+
+    def test_update_failure_is_reported_with_stage_and_restores_stdout(self):
+        with mock.patch.object(self.instance, "backup", side_effect=kit.KitError("test disk failure")), mock.patch.object(self.instance, "compose") as compose, contextlib.redirect_stdout(io.StringIO()) as output:
+            with self.assertRaisesRegex(kit.KitError, "备份配置失败.*test disk failure.*doctor"):
+                kit.update(self.instance)
+            print("stdout restored")
+        self.assertEqual(output.getvalue().splitlines(), ["备份配置……", "stdout restored"])
+        compose.assert_not_called()
+
     def test_uninstall_backs_up_and_only_removes_own_container_without_confirmation(self):
         with mock.patch.object(kit, "confirm", side_effect=AssertionError("unexpected confirmation")), mock.patch.object(self.instance, "backup") as backup, mock.patch.object(self.instance, "inspect"), mock.patch.object(self.instance, "compose") as compose:
             kit.dispatch(self.instance, type("Args", (), {"command": "uninstall"})())

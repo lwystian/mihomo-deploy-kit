@@ -44,6 +44,17 @@ class KitError(Exception):
     pass
 
 
+@contextlib.contextmanager
+def update_step(name):
+    print(name + "……", flush=True)
+    try:
+        with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
+            yield
+    except Exception as error:
+        detail = str(error) if isinstance(error, KitError) else type(error).__name__
+        raise KitError(name + "失败：" + detail + "；请用 ./deploy.sh doctor 或 ./deploy.sh logs 排查。") from None
+
+
 def need_yaml():
     if yaml is None:
         raise KitError("缺少 PyYAML（Python 模块 yaml）。请通过当前系统的包管理器安装；不同发行版的软件包名称可能不同。")
@@ -881,25 +892,26 @@ def change_auth(kit):
 def update(kit, image=None):
     target = image or kit.settings["image"]
     validate_image(target)
-    path, running = kit.backup()
-    old_image = kit.settings["image"]
-    kit.settings["image"] = target
-    try:
-        kit.write_env()
-        kit.compose("config", "--quiet")
-        kit.compose("pull", "server", timeout=900)
-    except Exception:
-        kit.settings["image"] = old_image
-        kit.write_env()
-        raise
-    kit.save()
-    try:
-        kit.up_checked()
-    except Exception:
-        restore_transaction(kit, path, start=running)
-        raise KitError("镜像更新验证失败，已恢复更新前配置和数据。")
-    print("镜像已检查并启动：" + target)
-    print("使用固定版本，不会自动切换 latest，也不会单独替换上游内置内核。")
+    with update_step("备份配置"):
+        path, running = kit.backup()
+    with update_step("更新服务"):
+        old_image = kit.settings["image"]
+        kit.settings["image"] = target
+        try:
+            kit.write_env()
+            kit.compose("config", "--quiet")
+            kit.compose("pull", "server", timeout=900)
+        except Exception:
+            kit.settings["image"] = old_image
+            kit.write_env()
+            raise
+        kit.save()
+        try:
+            kit.up_checked()
+        except Exception:
+            restore_transaction(kit, path, start=running)
+            raise KitError("镜像更新验证失败，已恢复更新前配置和数据。")
+    print("更新完成。")
 
 
 def sync_code(root):
@@ -1140,7 +1152,7 @@ def main():
         if args.image:
             validate_image(args.image)
         if not args.image_only:
-            with deployment_lock(root):
+            with update_step("检查更新"), deployment_lock(root):
                 changed = sync_code(root)
             if changed:
                 return reexec_update(root, args.image)
