@@ -19,6 +19,7 @@ jobs:
         run: |
           bash -n deploy.sh install.sh manage.sh
           ./deploy.sh --help > /dev/null
+          ./deploy.sh help > /dev/null
           /usr/bin/python3 -m py_compile kit.py
           /usr/bin/python3 tests/test-kit.py
           docker compose --env-file .env.example config --quiet

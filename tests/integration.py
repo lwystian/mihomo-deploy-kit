@@ -113,22 +113,36 @@ def run():
     with tempfile.TemporaryDirectory(prefix="mihomo-kit-ci-") as temporary:
         root = Path(temporary) / "deployment"
         root.mkdir(mode=0o700)
-        for name in kit.PROGRAM_FILES:
+        for name in kit.PROGRAM_FILES + ("deploy.sh",):
             kit.private_write(root / name, (ROOT / name).read_bytes())
+            if name.endswith(".sh"):
+                os.chmod(root / name, 0o700)
         control, api, proxy = unused_ports()
         s = {"schema": 1, "kit": "mihomo-deploy-kit", "project": "mkit-ci-" + uuid.uuid4().hex[:10],
              "image": kit.IMAGE, "control_port": control, "api_port": api, "proxy_port": proxy,
-             "proxy_bind": "127.0.0.1", "proxy_user": "ci-user", "proxy_password": secrets.token_urlsafe(24),
+             "proxy_bind": "127.0.0.1", "proxy_user": "ci-user", "proxy_password": "1",
              "control_token": secrets.token_hex(32), "clash_secret": secrets.token_hex(32), "subscriptions": []}
         instance = kit.Kit(root, s)
         instance.save()
         instance.write_env()
         (root / "data").mkdir(mode=0o700)
         kit.private_write(root / "data/active.yaml", kit.dump_yaml(dict(kit.policy(s), rules=["MATCH,REJECT"])))
+        def cli(*arguments):
+            return kit.process([str(root / "deploy.sh")] + list(arguments), cwd=str(root), timeout=900)
         try:
             instance.bootstrap()
             instance.doctor()
             print("PASS 初始化、API 和 HTTP/SOCKS5 正误凭据、端口与挂载")
+            assert "用法" in cli("help")
+            assert "容器" in cli("status")
+            cli("stop")
+            assert not instance.running()
+            cli("start")
+            assert instance.running()
+            cli("restart")
+            cli("doctor")
+            cli("logs")
+            print("PASS ./deploy.sh 统一入口的 help/status/stop/start/restart/doctor/logs 实际执行")
             host = next(iter(instance.inspect()["NetworkSettings"]["Networks"].values()))["Gateway"]
             fixture_port = service.server_address[1]
             source_url = "http://127.0.0.1:%s/subscription?token=ci-only-hidden" % fixture_port
@@ -180,15 +194,17 @@ def run():
             assert marker.read_text() == "original"
             instance.doctor()
             print("PASS 真实冷备份、校验、恢复和容器重新启动")
-            old_password = instance.settings["proxy_password"]
-            with mock.patch.object(kit, "ask", return_value="ci-user"), \
-                 mock.patch.object(kit, "new_password", return_value=secrets.token_urlsafe(24)):
-                kit.change_auth(instance)
-            instance.doctor()
-            assert proxy_http(instance, target, "ci-user", old_password)[0] in (403, 407)
-            print("PASS 修改代理凭据，旧密码被拒绝")
-            kit.update(instance)
-            print("PASS 固定版本更新、备份与启动验证")
+            for user, password in (("ci-user", "123"), ("中文 user@example", " a:@$'\\ "),
+                                   ("invalid-user", "invalid-password"), ("ci-user", "密" * 85)):
+                old_user, old_password = instance.settings["proxy_user"], instance.settings["proxy_password"]
+                with mock.patch.object(kit, "ask", return_value=user), mock.patch.object(kit, "new_password", return_value=password):
+                    kit.change_auth(instance)
+                instance.doctor()
+                assert proxy_http(instance, target, old_user, old_password)[0] in (403, 407)
+                assert proxy_http(instance, target, user, password)[0] == 200
+            print("PASS 单字符/短密码、中文和特殊符号、255 字节密码的真实 HTTP/SOCKS5 认证，旧凭据失效")
+            cli("update")
+            print("PASS ./deploy.sh update 实际更新、备份与启动验证")
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
                 if instance.inspect()["State"].get("Health", {}).get("Status") == "healthy":

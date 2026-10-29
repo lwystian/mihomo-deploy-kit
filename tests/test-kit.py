@@ -70,6 +70,93 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaises(kit.KitError):
             kit.Kit(self.root, bad)
 
+    def test_short_simple_and_special_passwords_are_accepted(self):
+        for password in ("1", "123", "password", " ", "密", " a:@$'\\ ", "x" * 255, "密" * 85):
+            with self.subTest(length=len(password.encode("utf-8"))):
+                value = settings()
+                value.update(proxy_user="中文 user@example", proxy_password=password)
+                instance = kit.Kit(self.root, value)
+                roundtrip = kit.safe_yaml(kit.dump_yaml(kit.policy(value)))
+                kit.check_policy(roundtrip, instance.settings)
+
+    def test_password_only_rejects_unusable_protocol_values(self):
+        for password in ("", "x" * 256, "密" * 86, "a\nb", "a\rb", "a\0b"):
+            with self.assertRaises(kit.KitError):
+                kit.validate_credentials("proxy", password)
+
+    def test_password_mismatch_retries_only_the_password(self):
+        output = io.StringIO()
+        with mock.patch.object(kit, "require_tty"), \
+             mock.patch.object(kit.getpass, "getpass", side_effect=["123", "456", "1", "1"]), \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(kit.new_password(), "1")
+        self.assertNotIn("123", output.getvalue())
+        self.assertNotIn("456", output.getvalue())
+
+    def test_blank_password_generates_or_preserves_existing_value(self):
+        with mock.patch.object(kit, "require_tty"), mock.patch.object(kit.getpass, "getpass", return_value=""), \
+             mock.patch.object(kit.secrets, "token_urlsafe", return_value="generated-only-for-test") as generated:
+            self.assertEqual(kit.new_password(), "generated-only-for-test")
+            self.assertEqual(kit.new_password(current="1"), "1")
+            generated.assert_called_once()
+
+    def test_blank_subscription_skips_download_and_backup(self):
+        before = (self.root / "settings.json").read_bytes()
+        with mock.patch.object(self.instance, "runtime_check"), mock.patch.object(self.instance, "ensure_overlay"), \
+             mock.patch.object(kit, "require_tty"), mock.patch.object(kit.getpass, "getpass", return_value=""), \
+             mock.patch.object(kit, "download_subscription") as download, mock.patch.object(self.instance, "backup") as backup:
+            kit.import_subscription(self.instance)
+            download.assert_not_called()
+            backup.assert_not_called()
+        self.assertEqual(before, (self.root / "settings.json").read_bytes())
+
+    def test_blank_restore_and_profile_choice_cancel_without_backup(self):
+        with mock.patch.object(kit, "require_tty"), mock.patch.object(kit, "ask", return_value=None), \
+             mock.patch.object(self.instance, "request", return_value=[{"id": "old", "name": "原配置", "type": "local"}]), \
+             mock.patch.object(self.instance, "backup") as backup, mock.patch.object(self.instance, "activate") as activate:
+            kit.restore_interactive(self.instance)
+            kit.choose_profile(self.instance)
+            backup.assert_not_called()
+            activate.assert_not_called()
+
+    def test_unchanged_credentials_do_not_restart_or_backup(self):
+        with mock.patch.object(kit, "ask", return_value=self.instance.settings["proxy_user"]), \
+             mock.patch.object(kit, "new_password", return_value=self.instance.settings["proxy_password"]), \
+             mock.patch.object(self.instance, "backup") as backup:
+            kit.change_auth(self.instance)
+            backup.assert_not_called()
+
+    def test_default_install_uses_source_and_commands_route_to_management(self):
+        with mock.patch.object(sys, "argv", ["deploy.sh"]), mock.patch.object(kit, "install") as install:
+            kit.main()
+            install.assert_called_once_with(kit.SOURCE)
+        for command in ("update", "stop", "start", "restart", "status", "logs", "backup"):
+            with mock.patch.object(sys, "argv", ["deploy.sh", "--root", str(self.root), command]), \
+                 mock.patch.object(kit.platform, "system", return_value="Linux"), \
+                 mock.patch.object(kit.os, "geteuid", return_value=0, create=True), \
+                 mock.patch.object(kit, "deployment_lock", return_value=contextlib.nullcontext()), \
+                 mock.patch.object(kit, "dispatch") as dispatch, mock.patch.object(kit, "install") as install:
+                kit.main()
+                self.assertEqual(dispatch.call_args[0][1].command, command)
+                install.assert_not_called()
+
+    def test_install_allows_enter_for_default_username_and_options(self):
+        destination = Path(self.temp.name) / "any-parent" / "any-project"
+        destination.parent.mkdir()
+        recorded = {}
+        def finish(instance):
+            recorded.update(instance.settings)
+        with mock.patch.object(kit, "require_tty"), mock.patch.object(kit, "environment_check"), \
+             mock.patch.object(kit, "process", return_value=""), mock.patch.object(kit, "published_ports", return_value=set()), \
+             mock.patch.object(kit, "free_port"), mock.patch("builtins.input", return_value=""), \
+             mock.patch.object(kit.getpass, "getpass", return_value=""), \
+             mock.patch.object(kit, "deployment_lock", return_value=contextlib.nullcontext()), \
+             mock.patch.object(kit, "finish_install", side_effect=finish):
+            kit.install(destination)
+        self.assertEqual(recorded["proxy_user"], "proxy")
+        self.assertEqual(recorded["proxy_port"], 9092)
+        self.assertTrue(recorded["proxy_password"])
+
     def test_arbitrary_images_and_latest_rejected(self):
         for image in ("other/image:v1.0.0", "ghcr.io/metacubex/metacubexd-server:latest", "a; echo unsafe"):
             with self.assertRaises(kit.KitError):
@@ -259,10 +346,10 @@ class DeploymentTests(unittest.TestCase):
         python.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
         os.chmod(python, 0o700)
         env = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"])
-        for extra in ([], ["--root", "/opt/自定 目录"]):
+        for extra in ([], ["--root", "/srv/自定 目录"], ["update"], ["stop"], ["logs", "-f"], ["help"]):
             result = subprocess.run(["./deploy.sh"] + extra, cwd=project, env=env,
                                     text=True, encoding="utf-8", capture_output=True, check=True)
-            self.assertEqual(result.stdout.splitlines(), [str(project / "kit.py"), "install", "--root", str(project)] + extra)
+            self.assertEqual(result.stdout.splitlines(), [str(project / "kit.py"), "--root", str(project)] + extra)
 
     def test_custom_install_copies_deploy_entry_and_keeps_scripts_executable(self):
         destination = Path(self.temp.name) / "custom-install"

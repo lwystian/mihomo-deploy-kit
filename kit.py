@@ -46,7 +46,7 @@ class KitError(Exception):
 
 def need_yaml():
     if yaml is None:
-        raise KitError("缺少 PyYAML。Ubuntu 请运行：sudo apt-get install python3-yaml")
+        raise KitError("缺少 PyYAML（Python 模块 yaml）。请通过当前系统的包管理器安装；不同发行版的软件包名称可能不同。")
 
 
 def timestamp():
@@ -71,22 +71,29 @@ def ask(message, default=None):
     return answer or default
 
 
-def new_password():
+def new_password(current=None):
     require_tty()
-    first = getpass.getpass("代理密码（隐藏输入，留空生成随机密码）：")
-    if not first:
-        return secrets.token_urlsafe(24)
-    if first != getpass.getpass("再次输入代理密码："):
-        raise KitError("两次输入的密码不同。")
-    validate_credentials("check", first)
-    return first
+    action = "保持现有密码" if current is not None else "自动生成"
+    while True:
+        first = getpass.getpass("代理密码（隐藏输入，留空%s）：" % action)
+        if not first:
+            return current if current is not None else secrets.token_urlsafe(24)
+        try:
+            validate_credentials("check", first)
+        except KitError as error:
+            print(str(error))
+            continue
+        if first != getpass.getpass("再次输入代理密码："):
+            print("两次输入不同，请重新输入密码。")
+            continue
+        return first
 
 
 def validate_credentials(user, password):
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", user):
-        raise KitError("用户名限 1–64 位英文字母、数字、下划线、点和短横线。")
-    if not 16 <= len(password.encode("utf-8")) <= 128 or any(ord(c) < 32 or ord(c) == 127 for c in password):
-        raise KitError("密码须为 16–128 字节且不能含控制字符。")
+    if not isinstance(user, str) or not 1 <= len(user.encode("utf-8")) <= 255 or ":" in user or any(c in user for c in "\0\r\n"):
+        raise KitError("用户名须为 1–255 个 UTF-8 字节，不能包含冒号、换行或 NUL（代理协议和配置格式限制）。")
+    if not isinstance(password, str) or not 1 <= len(password.encode("utf-8")) <= 255 or any(c in password for c in "\0\r\n"):
+        raise KitError("密码不要求复杂度或最小强度；须为非空的 1–255 个 UTF-8 字节，不能含换行或 NUL（SOCKS5 和终端输入限制）。")
 
 
 def port_number(value):
@@ -154,7 +161,7 @@ def process(args, cwd=None, timeout=120):
         raise KitError("命令启动失败或超时：" + args[0])
     if result.returncode:
         # Docker / 上游错误可能包含环境变量或订阅内容，不直接回显。
-        raise KitError("命令失败：%s（退出码 %s）。可运行 manage.sh doctor 或 logs 检查。" % (args[0], result.returncode))
+        raise KitError("命令失败：%s（退出码 %s）。可运行 ./deploy.sh doctor 或 ./deploy.sh logs 检查。" % (args[0], result.returncode))
     return result.stdout
 
 
@@ -362,6 +369,9 @@ class Kit:
 
     def proxy_auth_check(self):
         address = ("127.0.0.1", self.settings["proxy_port"])
+        wrong_user = "probe-" + secrets.token_hex(16)
+        while wrong_user == self.settings["proxy_user"]:
+            wrong_user = "probe-" + secrets.token_hex(16)
         def receive(stream, count):
             result = b""
             while len(result) < count:
@@ -371,7 +381,7 @@ class Kit:
                 result += chunk
             return result
         try:
-            for credential in (None, "invalid-user:invalid-password"):
+            for credential in (None, wrong_user + ":invalid-password"):
                 with socket.create_connection(address, timeout=5) as stream:
                     header = b""
                     if credential:
@@ -387,7 +397,7 @@ class Kit:
                 # 这同样拒绝匿名，不应错误地要求它必须返回 0xff。
                 if receive(stream, 2) not in (b"\x05\xff", b"\x05\x02"):
                     raise KitError("SOCKS5 接受了匿名认证。")
-            for user, password, success in (("invalid-user", "invalid-password", False),
+            for user, password, success in ((wrong_user, "invalid-password", False),
                                            (self.settings["proxy_user"], self.settings["proxy_password"], True)):
                 with socket.create_connection(address, timeout=5) as stream:
                     stream.sendall(b"\x05\x01\x02")
@@ -558,8 +568,9 @@ class Kit:
         print("面板：http://127.0.0.1:%s（仅服务器本机，可自行配置反向代理或 SSH 隧道）" % s["control_port"])
         print("API：http://127.0.0.1:%s（使用 CLASH_SECRET）" % s["api_port"])
         print("代理：%s:%s/tcp；用户名：%s；密码已隐藏。" % (s["proxy_bind"], s["proxy_port"], s["proxy_user"]))
-        print("查看凭据：bash %s/manage.sh show-secret proxy" % self.root)
-        print("管理命令：bash %s/manage.sh help" % self.root)
+        print("请在项目目录 %s 中使用以下命令：" % self.root)
+        print("查看凭据：./deploy.sh show-secret proxy")
+        print("管理帮助：./deploy.sh help")
         print("本项目不配置域名、HTTPS、证书、反向代理或系统防火墙。")
 
 
@@ -694,7 +705,10 @@ def import_subscription(kit, refresh=False):
         url, name = previous_source["url"], previous_source["name"]
     else:
         require_tty()
-        url = getpass.getpass("订阅 URL（隐藏输入）：").strip()
+        url = getpass.getpass("订阅 URL（隐藏输入，留空跳过）：").strip()
+        if not url:
+            print("已跳过订阅导入，当前配置保持不变。")
+            return
         name = ask("配置名称", "主订阅")
         if not name or len(name) > 80 or any(ord(c) < 32 for c in name):
             raise KitError("配置名称须为 1–80 个可打印字符。")
@@ -726,8 +740,12 @@ def choose_profile(kit):
         raise KitError("没有可激活的配置。")
     for index, entry in enumerate(entries, 1):
         print("%s. %s%s" % (index, entry["name"], "（当前）" if entry.get("active") else ""))
+    selected = ask("选择配置序号（留空取消）")
+    if not selected:
+        print("已取消切换，当前配置保持不变。")
+        return
     try:
-        number = int(ask("选择配置序号"))
+        number = int(selected)
         if number < 1:
             raise ValueError()
         profile_id = entries[number - 1]["id"]
@@ -784,7 +802,11 @@ def restore_transaction(kit, path, start=True):
 
 def restore_interactive(kit, path=None):
     require_tty()
-    path = Path(path or ask("备份 .tar.gz 的完整路径")).expanduser().resolve()
+    selected = path or ask("备份 .tar.gz 的完整路径（留空取消）")
+    if not selected:
+        print("已取消恢复，当前配置保持不变。")
+        return
+    path = Path(selected).expanduser().resolve()
     verify_archive(path)
     print("将恢复：" + str(path))
     if not confirm("这会替换本项目配置和数据，确认继续？"):
@@ -797,8 +819,11 @@ def restore_interactive(kit, path=None):
 
 def change_auth(kit):
     user = ask("新代理用户名", kit.settings["proxy_user"])
-    password = new_password()
+    password = new_password(current=kit.settings["proxy_password"])
     validate_credentials(user, password)
+    if user == kit.settings["proxy_user"] and password == kit.settings["proxy_password"]:
+        print("代理账号密码未变更，无需重启。")
+        return
     backup_path, running = kit.backup(resume=False)
     try:
         profile_id = kit.settings.get("policy_id", "")
@@ -860,7 +885,7 @@ def published_ports():
 
 def environment_check():
     if platform.system() != "Linux" or platform.machine() not in ("x86_64", "amd64", "aarch64", "arm64"):
-        raise KitError("安装器支持 Linux amd64/arm64；建议 Ubuntu 24.04。")
+        raise KitError("安装器需要 Linux amd64/arm64 和可用的 Docker/Compose，不限制 Linux 发行版。")
     if os.geteuid() != 0:
         raise KitError("请以 root 或 sudo 运行安装器。")
     need_yaml()
@@ -876,8 +901,12 @@ def validate_root(root):
     if proposed.is_symlink():
         raise KitError("安装目录不能是符号链接。")
     root = proposed.resolve()
-    if len(root.parts) < 3 or root in (Path("/etc"), Path("/usr/local"), Path("/var/lib"), Path("/opt/accountmate"), Path("/opt/edge-proxy")):
-        raise KitError("请选择独立的项目子目录，例如 /opt/metacubexd。")
+    protected = {Path(p).resolve() for p in (
+        "/", "/bin", "/sbin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64",
+        "/media", "/mnt", "/opt", "/proc", "/root", "/run", "/srv", "/sys", "/tmp",
+        "/usr", "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/local", "/var", "/var/lib")}
+    if root in protected or root == Path.home().resolve() or root == root.parent:
+        raise KitError("请选择独立的项目目录，不要直接使用系统目录或用户主目录。项目可放在任意有权限的位置。")
     return root
 
 
@@ -910,7 +939,7 @@ def install(root):
     if public:
         print("普通 HTTP/SOCKS5 代理认证不加密客户端到代理服务器的连接；本项目不配置 TLS。")
     proxy_port = port_number(ask("代理端口", "9092"))
-    user = ask("代理用户名")
+    user = ask("代理用户名", "proxy")
     password = new_password()
     validate_credentials(user, password)
     control_port, api_port = 9090, 9091
@@ -963,7 +992,7 @@ def finish_install(kit):
         with contextlib.suppress(Exception):
             kit.stop()
         kit.write_env(bind="127.0.0.1")
-        raise KitError("安装启动阶段失败：已停止本项目容器并恢复仅本机绑定；配置、数据均保留。运行 manage.sh logs/doctor 排查。")
+        raise KitError("安装启动阶段失败：已停止本项目容器并恢复仅本机绑定；配置、数据均保留。运行 ./deploy.sh logs 或 ./deploy.sh doctor 排查。")
     if confirm("现在导入订阅？"):
         import_subscription(kit)
     else:
@@ -972,7 +1001,9 @@ def finish_install(kit):
     kit.report()
 
 
-HELP = """中文管理命令（默认目录 /opt/metacubexd）：
+HELP = """用法：./deploy.sh [命令] [参数]
+默认使用脚本所在项目目录；需要管理员权限的操作请使用 root 或 sudo。
+  （不带命令）/ install        交互部署；已有部署则识别并复用
   help                       显示帮助
   status                     容器、内核、端口、数据目录
   doctor                     配置、挂载、网络及真实认证检查
@@ -987,13 +1018,14 @@ HELP = """中文管理命令（默认目录 /opt/metacubexd）：
   change-proxy-auth          修改代理账号密码并校验
   show-secret [api|control|proxy]  警告并确认后在终端显示凭据
   uninstall                  备份后仅删除本项目容器，保留配置和数据
-反向代理、域名、证书、防火墙由用户自行管理。"""
+例如：./deploy.sh update、./deploy.sh stop、./deploy.sh logs -f
+安装目录可通过 --root 指定。反向代理、域名、证书、防火墙由用户自行管理。"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Mihomo + MetaCubeXD 轻量部署套件")
+    parser = argparse.ArgumentParser(prog="deploy.sh", description="Mihomo + MetaCubeXD 轻量部署套件")
     parser.add_argument("--root", default=None, help="安装目录")
-    parser.add_argument("command", nargs="?", default="help")
+    parser.add_argument("command", nargs="?", default="install")
     parser.add_argument("argument", nargs="?")
     parser.add_argument("--image")
     parser.add_argument("-f", "--follow", action="store_true")
@@ -1002,7 +1034,7 @@ def main():
         print(HELP)
         return
     if args.command == "install":
-        install(args.root or "/opt/metacubexd")
+        install(args.root or SOURCE)
         return
     root = Path(args.root or SOURCE).resolve()
     if not (root / "settings.json").is_file():
@@ -1066,7 +1098,7 @@ def dispatch(kit, args):
             kit.compose("rm", "-f", "server")
             print("本项目容器已移除。配置、数据、备份和网络均保留；没有操作其他项目。")
     else:
-        raise KitError("未知命令。运行 manage.sh help 查看用法。")
+        raise KitError("未知命令。运行 ./deploy.sh help 查看用法。")
 
 
 if __name__ == "__main__":

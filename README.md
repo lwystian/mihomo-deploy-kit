@@ -6,34 +6,51 @@
 
 项目只负责部署。**不包含 Caddy/Nginx，不询问域名，不申请证书，不修改现有反向代理或防火墙。** 本项目不是 MetaCubeX 官方项目。
 
-## 在 `/opt` 安装
+## 快速开始
 
-适用 Linux amd64/arm64，建议 Ubuntu 24.04。需要 Docker Engine、Docker Compose 插件、Python 3.8+ 和 PyYAML。安装器检查依赖，不自动安装或升级 Docker。
+面向满足依赖的 Linux amd64/arm64 系统，不限定发行版，也不限定安装路径。需要 Git、Bash、Docker Engine、Docker Compose 插件、Python 3.8+ 和 PyYAML（Python 导入名为 `yaml`）。请用当前发行版的包管理器准备依赖；安装器只检查，不自动安装或升级 Docker。
 
-缺少 Git 或 Python 依赖时，先执行：
+在你选定的父目录下克隆项目：
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y git python3 python3-yaml
+git clone https://github.com/lwystian/mihomo-deploy-kit.git
+cd mihomo-deploy-kit
+./deploy.sh
 ```
 
-以 root 身份克隆项目，进入项目目录后执行 `./deploy.sh`：
+部署和容器管理使用 root 或 `sudo ./deploy.sh`。可以先检查依赖：
 
 ```bash
-git clone https://github.com/lwystian/mihomo-deploy-kit.git /opt/metacubexd
-cd /opt/metacubexd
-./deploy.sh
+docker version
+docker compose version
+python3 -c 'import yaml'
 ```
 
 请先阅读脚本再运行。无需下载 ZIP，无需在聊天中提供服务器密码、代理密码或订阅链接。
 
-默认直接部署在脚本所在的项目目录，不要求目录必须叫 `metacubexd`。例如克隆到 `/opt/mihomo-deploy-kit` 后，进入该目录执行 `./deploy.sh` 即可。非 root 用户使用 `sudo ./deploy.sh`。
+默认直接部署在脚本所在的项目目录，不要求目录使用固定名称或位于 `/opt`。选择独立的项目目录即可；不要直接把系统目录或用户主目录本身当成部署目录。
 
-需要将运行配置及数据安装到另一个独立空目录时，可执行 `./deploy.sh --root /opt/其他独立目录`。
+需要将运行配置及数据安装到另一个独立空目录时，可执行 `./deploy.sh --root /你选择的路径/项目目录`。之后进入该安装目录使用同一个 `./deploy.sh` 管理。
 
 ## 交互内容
 
-普通安装询问：允许外部设备使用代理与否、代理端口、用户名、密码、是否导入订阅。密码隐藏输入并确认，留空生成随机强密码。订阅链接也隐藏输入；导入时询问名称（默认“主订阅”）及是否激活。
+所有有默认值的安装问题都可直接回车。密码和订阅链接隐藏输入，不在普通日志显示。
+
+| 问题 | 回车后的行为 |
+| --- | --- |
+| 允许外部设备使用代理？ | 是 |
+| 代理端口 | `9092` |
+| 代理用户名 | `proxy` |
+| 代理密码 | 自动生成随机密码；自设密码需再次确认 |
+| 修改高级设置？ | 否，使用当前目录及默认管理端口 |
+| 现在导入订阅？ | 否，稍后可单独导入 |
+| 订阅 URL | 留空跳过导入 |
+| 配置名称 | `主订阅` |
+| 导入后立即激活？ | 是 |
+
+自设密码**不检查复杂度，不强制 16 位，单字符、短密码、中文和特殊符号都可用**。SOCKS5 用户名和密码各自最长为 255 个 UTF-8 字节，密码须非空且不能含换行或 NUL；用户名还不能含冒号，因为 Mihomo 配置用它分隔用户名和密码。这些是协议及输入格式边界，不是密码强度要求。密码确认不一致时只重试密码输入，无需重新填写所有参数。
+
+修改已有账号密码时，用户名回车沿用原值，密码回车保留原密码；全部未改动则不重启。恢复路径或切换配置留空可取消；覆盖恢复、卸载、显示密钥仍需明确确认。
 
 高级设置可修改安装目录、面板端口、API 端口。管理密钥自动随机生成；重复运行安装器时复用已有配置，不重新生成密钥。
 
@@ -95,28 +112,31 @@ ssh -N -L 9090:127.0.0.1:9090 -L 9091:127.0.0.1:9091 用户@服务器IP
 ## 管理命令
 
 ```bash
-sudo bash /opt/metacubexd/manage.sh help
-sudo bash /opt/metacubexd/manage.sh status
-sudo bash /opt/metacubexd/manage.sh doctor
-sudo bash /opt/metacubexd/manage.sh logs -f
-sudo bash /opt/metacubexd/manage.sh restart
-sudo bash /opt/metacubexd/manage.sh import-subscription
-sudo bash /opt/metacubexd/manage.sh refresh-subscription
-sudo bash /opt/metacubexd/manage.sh switch-profile
-sudo bash /opt/metacubexd/manage.sh change-proxy-auth
-sudo bash /opt/metacubexd/manage.sh show-secret proxy
-sudo bash /opt/metacubexd/manage.sh show-secret api
-sudo bash /opt/metacubexd/manage.sh backup
-sudo bash /opt/metacubexd/manage.sh restore
-sudo bash /opt/metacubexd/manage.sh update
-sudo bash /opt/metacubexd/manage.sh uninstall
+./deploy.sh                          # 首次部署，已有部署则识别复用
+./deploy.sh help
+./deploy.sh status
+./deploy.sh doctor
+./deploy.sh logs -f
+./deploy.sh start
+./deploy.sh stop
+./deploy.sh restart
+./deploy.sh update
+./deploy.sh backup
+./deploy.sh restore
+./deploy.sh import-subscription
+./deploy.sh refresh-subscription
+./deploy.sh switch-profile
+./deploy.sh change-proxy-auth
+./deploy.sh show-secret proxy
+./deploy.sh show-secret api
+./deploy.sh uninstall
 ```
 
 `start`、`stop`、`restart` 只操作本项目容器。`doctor` 验证实际数据挂载、端口、内核、管理认证和代理认证；不把容器 `Up` 当成出站可用的证明。出站网站、公网安全组和自有 HTTPS 入口需另外验证。
 
 `update` 默认重新检查固定版本镜像，不自动跳到 `latest`。可显式使用 `update --image ghcr.io/metacubex/metacubexd-server:v版本号` 更新到经审查的新版本。更新前完整备份，失败时恢复旧配置和数据。内核版本跟随上游镜像，不额外下载或替换二进制。
 
-更新本仓库的脚本可执行 `git -C /opt/metacubexd pull --ff-only`；这只更新代码，不自动重启容器。若存在本地修改应先审查差异，勿强制覆盖。
+更新本仓库脚本时，在克隆的项目目录执行 `git pull --ff-only`；这只更新代码，不自动重启容器。`./deploy.sh update` 负责容器镜像更新。若存在本地修改应先审查差异，勿强制覆盖。
 
 ## 订阅实现及限制
 
@@ -144,10 +164,10 @@ sudo bash /opt/metacubexd/manage.sh uninstall
 
 ## 数据、备份与恢复
 
-- `/opt/metacubexd/data` 绑定到容器 `/data`：订阅内容、覆盖层、运行配置、缓存及 GEO 文件。
-- `/opt/metacubexd/settings.json`：代理凭据、管理密钥、订阅 URL 与配置 ID。
-- `/opt/metacubexd/.env`：镜像、端口、管理密钥。不要提交 Git。
-- `/opt/metacubexd-backups`：冷备份 `.tar.gz` 与 `.sha256`；更换安装目录时使用其同级 `目录名-backups`。
+- 项目目录的 `data/` 绑定到容器 `/data`：订阅内容、覆盖层、运行配置、缓存及 GEO 文件。
+- 项目目录的 `settings.json`：代理凭据、管理密钥、订阅 URL 与配置 ID。
+- 项目目录的 `.env`：镜像、端口、管理密钥。不要提交 Git。
+- 项目目录同级的 `项目目录名-backups/`：冷备份 `.tar.gz` 与 `.sha256`，不依赖固定安装路径。
 
 代理密码按 Mihomo 要求以可用凭据保存，并非密码哈希。目录权限 `700`，敏感文件和备份权限 `600`；容器使用 `umask 077`。备份含完整敏感信息，不加密，不可上传公共仓库。
 
@@ -163,7 +183,7 @@ sudo bash /opt/metacubexd/manage.sh uninstall
 
 当前默认官方镜像为 `ghcr.io/metacubex/metacubexd-server:v1.273.1`，其 Dockerfile 默认内置 Mihomo `v1.19.27`。面板版本与内核版本是两回事；本套件不会把它描述成最新内核。
 
-本地测试和 GitHub Actions 分为纯逻辑测试、Compose 检查及实际容器集成测试。执行结果与尚未验证的项目见 [TEST_REPORT.md](TEST_REPORT.md)。
+本地测试和 GitHub Actions 分为纯逻辑测试、Compose 检查及实际容器集成测试。Linux 自动化测试目前运行于 Ubuntu runner，这代表已验证的环境，不是安装器对发行版的限制。其他发行版及 arm64 的实际部署需在相应环境验证。执行结果与尚未验证的项目见 [TEST_REPORT.md](TEST_REPORT.md)。
 
 ```bash
 python3 tests/test-kit.py
@@ -181,4 +201,5 @@ python3 tests/integration.py --run
 - [订阅及覆盖层源码](https://github.com/MetaCubeX/metacubexd/blob/v1.273.1/packages/agent/src/profiles.ts)
 - [Mihomo 代理端口](https://wiki.metacubex.one/config/inbound/port/)
 - [Mihomo 认证与外部访问](https://wiki.metacubex.one/config/general/)
+- [SOCKS5 用户名密码协议长度边界](https://www.rfc-editor.org/rfc/rfc1929)
 - [Docker 端口发布说明](https://docs.docker.com/engine/network/port-publishing/)
