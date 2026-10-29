@@ -1,0 +1,25 @@
+name: 验证部署套件
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装测试所需 YAML 解析库
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-yaml
+      - name: 语法及逻辑测试
+        run: |
+          bash -n install.sh manage.sh
+          /usr/bin/python3 -m py_compile kit.py
+          /usr/bin/python3 tests/test-kit.py
+          docker compose --env-file .env.example config --quiet
+      - name: 真实容器、认证、订阅、WebSocket 及备份恢复测试
+        run: sudo /usr/bin/python3 tests/integration.py --run

@@ -1,0 +1,13 @@
+.env
+settings.json
+data/
+backups/
+.restore-*/
+.failed-restore-*/
+.install.lock
+__pycache__/
+*.pyc
+*.log
+*.tar.gz
+*.sha256
+.venv/

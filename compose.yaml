@@ -1,0 +1,46 @@
+services:
+  server:
+    image: ${IMAGE:?请先运行 install.sh}
+    restart: unless-stopped
+    entrypoint:
+      - /sbin/tini
+      - --
+      - /bin/sh
+      - -c
+      - umask 077; exec /docker-entrypoint.sh
+    environment:
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?缺少 CONTROL_TOKEN}
+      CLASH_SECRET: ${CLASH_SECRET:?缺少 CLASH_SECRET}
+      CONTROL_PORT: "9090"
+      CLASH_API_PORT: "9091"
+      MIXED_PORT: "9092"
+      DEFAULT_BACKEND_URL: ${DEFAULT_BACKEND_URL:-}
+      DATA_DIR: /data
+      TZ: UTC
+    ports:
+      - "127.0.0.1:${CONTROL_HOST_PORT:-9090}:9090/tcp"
+      - "127.0.0.1:${API_HOST_PORT:-9091}:9091/tcp"
+      - "${PROXY_BIND:-127.0.0.1}:${PROXY_HOST_PORT:-9092}:9092/tcp"
+    volumes:
+      - type: bind
+        source: ./data
+        target: /data
+        bind:
+          create_host_path: false
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "Promise.all([fetch('http://127.0.0.1:9090/api/control/health'),fetch('http://127.0.0.1:9091/version',{headers:{Authorization:'Bearer '+process.env.CLASH_SECRET}})]).then(a=>process.exit(a.every(r=>r.ok)?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
