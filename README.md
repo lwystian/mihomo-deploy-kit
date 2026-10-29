@@ -1,5 +1,7 @@
 # Mihomo Deploy Kit
 
+[![验证部署套件](https://github.com/lwystian/mihomo-deploy-kit/actions/workflows/test.yml/badge.svg)](https://github.com/lwystian/mihomo-deploy-kit/actions/workflows/test.yml)
+
 轻量的 Mihomo + MetaCubeXD Docker Compose 部署工具。一个官方一体化容器，提供中文交互安装、带账号密码的 HTTP/SOCKS5 代理、订阅导入和基本维护功能。
 
 项目只负责部署。**不包含 Caddy/Nginx，不询问域名，不申请证书，不修改现有反向代理或防火墙。** 本项目不是 MetaCubeX 官方项目。

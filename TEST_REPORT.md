@@ -14,15 +14,20 @@
 
 ## GitHub Actions 容器集成验证
 
-工作流在独立 Ubuntu 24.04 临时 runner 中运行，不使用用户服务器、真实订阅或真实凭据。初始发布时等待工作流结果；以 GitHub Actions 对应提交的实际运行记录为准。
+工作流已在独立 Ubuntu 24.04 x86_64 临时 runner 中通过，实际 Docker 版本为 `28.0.4`，Compose 为 `2.38.2`。不使用用户服务器、真实订阅或真实凭据。
 
-集成脚本实际检查：初始化与内核就绪、管理 API 认证、HTTP/SOCKS5 正确及错误凭据、HTTP 转发、CONNECT、WebSocket 数据帧、订阅创建/激活/更新、订阅覆盖后认证保留、备份恢复、凭据修改、镜像更新及仅删除测试容器的卸载。
+- 验证的代码提交：`829d9d9ac5448e4fe40d6f433f5b6e7c1e9e6b5f`。
+- [完整成功运行记录](https://github.com/lwystian/mihomo-deploy-kit/actions/runs/40838097854)。
+- 23 项逻辑测试及下列真实容器测试全部通过。
+
+集成脚本实际检查：初始化与内核就绪、管理 API 认证、HTTP/SOCKS5 正确及错误凭据、HTTP 转发、CONNECT、WebSocket 数据帧、无通配 CORS、SOCKS4 不绕过密码、订阅创建/激活/更新、订阅覆盖后认证保留、备份恢复、凭据修改后旧密码失效、固定版本镜像更新、Docker 健康检查及仅删除测试容器的卸载。
 
 当前 Windows 开发环境没有运行中的 Docker Engine，因此本机没有执行真实容器集成测试。`python3 tests/integration.py` 不带 `--run` 时明确显示 SKIP，不计为通过。
 
 ## 仍需部署者验证
 
 - 服务器实际 Docker/Compose 版本、磁盘、现有端口及文件权限。
+- 用户提供的 Docker `29.8.1`、Compose `5.5.1` 版本组合未在用户服务器上执行测试；arm64 仅核实镜像 manifest，未运行该架构容器。
 - 云安全组、运营商网络及外部设备实际连接公网代理。
 - 用户真实订阅兼容性、节点可达性、规则及出口行为。
 - 用户自行配置的反向代理、HTTPS、证书、面板访问认证及跨域设置。
