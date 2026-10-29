@@ -84,14 +84,34 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaises(kit.KitError):
                 kit.validate_credentials("proxy", password)
 
-    def test_password_mismatch_retries_only_the_password(self):
-        output = io.StringIO()
-        with mock.patch.object(kit, "require_tty"), \
-             mock.patch.object(kit.getpass, "getpass", side_effect=["123", "456", "1", "1"]), \
-             contextlib.redirect_stdout(output):
+    def test_password_is_hidden_and_entered_once(self):
+        with mock.patch.object(kit, "require_tty"), mock.patch.object(kit.getpass, "getpass", return_value="1") as password:
             self.assertEqual(kit.new_password(), "1")
-        self.assertNotIn("123", output.getvalue())
-        self.assertNotIn("456", output.getvalue())
+            self.assertEqual(password.call_count, 1)
+
+    def test_show_secret_prints_requested_value_without_confirmation(self):
+        for target, expected in (("api", self.instance.settings["clash_secret"]), ("control", self.instance.settings["control_token"]), ("proxy", self.instance.settings["proxy_password"])):
+            with self.subTest(target=target), mock.patch("builtins.input", side_effect=AssertionError("unexpected confirmation")), mock.patch.object(kit, "require_tty", side_effect=AssertionError("unexpected terminal gate")), contextlib.redirect_stdout(io.StringIO()) as output:
+                args = type("Args", (), {"command": "show-secret", "argument": target})()
+                kit.dispatch(self.instance, args)
+            self.assertIn(expected, output.getvalue())
+            self.assertNotIn("SHOW", output.getvalue())
+            self.assertNotIn("警告", output.getvalue())
+
+    def test_restore_with_path_backs_up_and_runs_without_confirmation(self):
+        archive = self.root.parent / "saved.tar.gz"
+        with mock.patch.object(kit, "verify_archive") as verify, mock.patch.object(kit, "confirm", side_effect=AssertionError("unexpected confirmation")), mock.patch.object(kit, "require_tty", side_effect=AssertionError("unexpected terminal gate")), mock.patch.object(self.instance, "backup", return_value=(archive, True)) as backup, mock.patch.object(kit, "restore_transaction") as restore:
+            kit.restore_interactive(self.instance, str(archive))
+        verify.assert_called_once_with(archive)
+        backup.assert_called_once_with()
+        restore.assert_called_once_with(self.instance, archive, start=True)
+
+    def test_uninstall_backs_up_and_only_removes_own_container_without_confirmation(self):
+        with mock.patch.object(kit, "confirm", side_effect=AssertionError("unexpected confirmation")), mock.patch.object(self.instance, "backup") as backup, mock.patch.object(self.instance, "inspect"), mock.patch.object(self.instance, "compose") as compose:
+            kit.dispatch(self.instance, type("Args", (), {"command": "uninstall"})())
+        backup.assert_called_once_with(resume=False)
+        compose.assert_called_once_with("rm", "-f", "server")
+        self.assertTrue((self.root / "data/active.yaml").is_file())
 
     def test_blank_password_generates_or_preserves_existing_value(self):
         with mock.patch.object(kit, "require_tty"), mock.patch.object(kit.getpass, "getpass", return_value=""), \

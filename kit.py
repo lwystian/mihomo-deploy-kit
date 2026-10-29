@@ -83,9 +83,6 @@ def new_password(current=None):
         except KitError as error:
             print(str(error))
             continue
-        if first != getpass.getpass("再次输入代理密码："):
-            print("两次输入不同，请重新输入密码。")
-            continue
         return first
 
 
@@ -803,7 +800,6 @@ def restore_transaction(kit, path, start=True):
 
 
 def restore_interactive(kit, path=None):
-    require_tty()
     selected = path or ask("备份 .tar.gz 的完整路径（留空取消）")
     if not selected:
         print("已取消恢复，当前配置保持不变。")
@@ -811,9 +807,6 @@ def restore_interactive(kit, path=None):
     path = Path(selected).expanduser().resolve()
     verify_archive(path)
     print("将恢复：" + str(path))
-    if not confirm("这会替换本项目配置和数据，确认继续？"):
-        print("已取消，未修改数据。")
-        return
     backup_path, running = kit.backup()
     print("当前状态已备份：" + str(backup_path))
     restore_transaction(kit, path, start=running)
@@ -1087,12 +1080,12 @@ HELP = """用法：./deploy.sh [命令] [参数]
   update [--image 官方版本]   自动拉取代码，再备份并更新镜像、验证服务
   update --image-only        跳过代码更新，仅备份并检查镜像
   backup                     短暂停止本项目并创建完整校验备份
-  restore [备份路径]          验证备份，二次确认，先备份当前状态
+  restore [备份路径]          验证备份，先备份当前状态并恢复
   import-subscription        隐藏输入 URL、下载、校验、可选激活
   refresh-subscription       更新所选订阅，保留此前配置
   switch-profile             选择并激活已有配置
   change-proxy-auth          修改代理账号密码并校验
-  show-secret [api|control|proxy]  警告并确认后在终端显示凭据
+  show-secret [api|control|proxy]  直接显示指定凭据
   uninstall                  备份后仅删除本项目容器，保留配置和数据
 例如：./deploy.sh update、./deploy.sh stop、./deploy.sh logs -f
 安装目录可通过 --root 指定。反向代理、域名、证书、防火墙由用户自行管理。"""
@@ -1170,10 +1163,6 @@ def dispatch(kit, args):
     elif args.command == "change-proxy-auth":
         change_auth(kit)
     elif args.command == "show-secret":
-        require_tty()
-        print("警告：下方会显示敏感凭据，请避免录屏、共享终端或复制到普通日志。")
-        if input("确认显示请输入 SHOW：").strip() != "SHOW":
-            return
         target = args.argument or "api"
         if target == "proxy":
             print("代理用户名：%s\n代理密码：%s" % (kit.settings["proxy_user"], kit.settings["proxy_password"]))
@@ -1182,11 +1171,10 @@ def dispatch(kit, args):
         else:
             raise KitError("凭据类型须为 api、control 或 proxy。")
     elif args.command == "uninstall":
-        if confirm("确认备份后移除本项目容器？配置、数据及网络均保留。"):
-            kit.backup(resume=False)
-            kit.inspect()
-            kit.compose("rm", "-f", "server")
-            print("本项目容器已移除。配置、数据、备份和网络均保留；没有操作其他项目。")
+        kit.backup(resume=False)
+        kit.inspect()
+        kit.compose("rm", "-f", "server")
+        print("本项目容器已移除。配置、数据、备份和网络均保留；没有操作其他项目。")
     else:
         raise KitError("未知命令。运行 ./deploy.sh help 查看用法。")
 

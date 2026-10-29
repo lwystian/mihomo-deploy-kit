@@ -152,6 +152,9 @@ def run():
             print("PASS 初始化、API 和 HTTP/SOCKS5 正误凭据、端口与挂载")
             assert "用法" in cli("help")
             assert "容器" in cli("status")
+            assert cli("show-secret", "api").strip() == instance.settings["clash_secret"]
+            assert instance.settings["proxy_password"] in cli("show-secret", "proxy")
+            print("PASS 查看 API 与代理凭据无需二次输入或终端确认")
             cli("stop")
             assert not instance.running()
             cli("start")
