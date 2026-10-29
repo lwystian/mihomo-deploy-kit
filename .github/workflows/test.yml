@@ -17,7 +17,8 @@ jobs:
           sudo apt-get install -y python3-yaml
       - name: 语法及逻辑测试
         run: |
-          bash -n install.sh manage.sh
+          bash -n deploy.sh install.sh manage.sh
+          ./deploy.sh --help > /dev/null
           /usr/bin/python3 -m py_compile kit.py
           /usr/bin/python3 tests/test-kit.py
           docker compose --env-file .env.example config --quiet

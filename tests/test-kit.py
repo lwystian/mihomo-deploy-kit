@@ -6,7 +6,9 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -243,6 +245,36 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(ports[0].startswith("127.0.0.1:"))
         self.assertTrue(ports[1].startswith("127.0.0.1:"))
         self.assertFalse(any("/udp" in port for port in ports))
+
+    @unittest.skipUnless(os.name == "posix", "直接执行 .sh 及可执行位在 Linux CI 验证")
+    def test_deploy_runs_from_project_directory_and_forwards_custom_root(self):
+        project = Path(self.temp.name) / "项目 空格"
+        project.mkdir()
+        for name in ("deploy.sh", "install.sh"):
+            shutil.copy2(ROOT / name, project / name)
+            os.chmod(project / name, 0o700)
+        binary = Path(self.temp.name) / "bin"
+        binary.mkdir()
+        python = binary / "python3"
+        python.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
+        os.chmod(python, 0o700)
+        env = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"])
+        for extra in ([], ["--root", "/opt/自定 目录"]):
+            result = subprocess.run(["./deploy.sh"] + extra, cwd=project, env=env,
+                                    text=True, encoding="utf-8", capture_output=True, check=True)
+            self.assertEqual(result.stdout.splitlines(), [str(project / "kit.py"), "install", "--root", str(project)] + extra)
+
+    def test_custom_install_copies_deploy_entry_and_keeps_scripts_executable(self):
+        destination = Path(self.temp.name) / "custom-install"
+        destination.mkdir()
+        instance = kit.Kit(destination, settings())
+        with mock.patch.object(instance, "bootstrap"), mock.patch.object(instance, "doctor"), \
+             mock.patch.object(instance, "report"), mock.patch.object(kit, "confirm", return_value=False):
+            kit.finish_install(instance)
+        self.assertEqual((destination / "deploy.sh").read_bytes(), (ROOT / "deploy.sh").read_bytes())
+        if os.name == "posix":
+            for name in ("deploy.sh", "install.sh", "manage.sh"):
+                self.assertEqual((destination / name).stat().st_mode & 0o777, 0o700)
 
     def test_proxy_probe_understands_upstream_rejections_without_accepting_anonymous(self):
         def fake_socket(chunks):

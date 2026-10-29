@@ -17,16 +17,19 @@ sudo apt-get update
 sudo apt-get install -y git python3 python3-yaml
 ```
 
-克隆并安装：
+以 root 身份克隆项目，进入项目目录后执行 `./deploy.sh`：
 
 ```bash
-sudo git clone https://github.com/lwystian/mihomo-deploy-kit.git /opt/metacubexd
-sudo bash /opt/metacubexd/install.sh
+git clone https://github.com/lwystian/mihomo-deploy-kit.git /opt/metacubexd
+cd /opt/metacubexd
+./deploy.sh
 ```
 
 请先阅读脚本再运行。无需下载 ZIP，无需在聊天中提供服务器密码、代理密码或订阅链接。
 
-也可从其他位置运行，默认安装目标仍为 `/opt/metacubexd`；使用 `bash install.sh --root /opt/其他独立目录` 修改安装目录。
+默认直接部署在脚本所在的项目目录，不要求目录必须叫 `metacubexd`。例如克隆到 `/opt/mihomo-deploy-kit` 后，进入该目录执行 `./deploy.sh` 即可。非 root 用户使用 `sudo ./deploy.sh`。
+
+需要将运行配置及数据安装到另一个独立空目录时，可执行 `./deploy.sh --root /opt/其他独立目录`。
 
 ## 交互内容
 

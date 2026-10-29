@@ -946,9 +946,11 @@ def finish_install(kit):
     root, s = kit.root, kit.settings
     if (root / "settings.json").exists() or (root / "data").exists() or (root / ".env").exists():
         raise KitError("安装过程中发现已有配置，停止以免并发覆盖。")
-    for name in PROGRAM_FILES:
+    for name in PROGRAM_FILES + ("deploy.sh",):
         if root != SOURCE:
             private_write(root / name, (SOURCE / name).read_bytes())
+        if name.endswith(".sh"):
+            os.chmod(root / name, 0o700)
     (root / "data").mkdir(mode=0o700)
     kit.save()
     kit.write_env(bind="127.0.0.1")
@@ -1004,7 +1006,7 @@ def main():
         return
     root = Path(args.root or SOURCE).resolve()
     if not (root / "settings.json").is_file():
-        raise KitError("目录没有本套件部署配置，请先运行 install.sh。")
+        raise KitError("目录没有本套件部署配置，请先在项目目录执行 ./deploy.sh。")
     need_yaml()
     if platform.system() != "Linux" or os.geteuid() != 0:
         raise KitError("管理操作请在 Linux 服务器上以 root 或 sudo 运行。")

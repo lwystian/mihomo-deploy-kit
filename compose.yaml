@@ -1,6 +1,6 @@
 services:
   server:
-    image: ${IMAGE:?请先运行 install.sh}
+    image: ${IMAGE:?请先执行 ./deploy.sh}
     restart: unless-stopped
     entrypoint:
       - /sbin/tini
