@@ -98,13 +98,78 @@ class DeploymentTests(unittest.TestCase):
             self.assertNotIn("SHOW", output.getvalue())
             self.assertNotIn("警告", output.getvalue())
 
-    def test_restore_with_path_backs_up_and_runs_without_confirmation(self):
+    def test_restore_with_path_stages_source_before_rotating_backup(self):
         archive = self.root.parent / "saved.tar.gz"
-        with mock.patch.object(kit, "verify_archive") as verify, mock.patch.object(kit, "confirm", side_effect=AssertionError("unexpected confirmation")), mock.patch.object(kit, "require_tty", side_effect=AssertionError("unexpected terminal gate")), mock.patch.object(self.instance, "backup", return_value=(archive, True)) as backup, mock.patch.object(kit, "restore_transaction") as restore:
+        with mock.patch.object(kit, "confirm", side_effect=AssertionError("unexpected confirmation")), mock.patch.object(kit, "require_tty", side_effect=AssertionError("unexpected terminal gate")), mock.patch.object(kit, "restore_transaction") as restore:
             kit.restore_interactive(self.instance, str(archive))
-        verify.assert_called_once_with(archive)
-        backup.assert_called_once_with()
-        restore.assert_called_once_with(self.instance, archive, start=True)
+        restore.assert_called_once_with(self.instance, archive, backup_current=True)
+
+    def test_backup_retains_one_complete_snapshot_inside_project(self):
+        with mock.patch.object(self.instance, "running", return_value=False):
+            first, _ = self.instance.backup()
+            kit.private_write(self.root / "data/marker", "newest")
+            latest, _ = self.instance.backup()
+        self.assertEqual(latest.parent, self.root / "backups")
+        self.assertFalse(first.exists())
+        self.assertFalse(Path(str(first) + ".sha256").exists())
+        self.assertEqual(list(latest.parent.glob("*.tar.gz")), [latest])
+        kit.verify_archive(latest)
+        with tarfile.open(latest) as archive:
+            self.assertEqual(archive.extractfile("data/marker").read(), b"newest")
+            self.assertFalse(any(n.startswith("backups/") for n in archive.getnames()))
+
+    def test_failed_backup_preserves_previous_verified_snapshot(self):
+        with mock.patch.object(self.instance, "running", return_value=False):
+            previous, _ = self.instance.backup()
+            def fail(root, destination):
+                kit.private_write(destination, "incomplete")
+                raise kit.KitError("test archive failure")
+            with mock.patch.object(kit, "create_archive", side_effect=fail):
+                with self.assertRaises(kit.KitError):
+                    self.instance.backup()
+        kit.verify_archive(previous)
+        self.assertEqual(list(previous.parent.glob("*.tar.gz")), [previous])
+
+    def test_successful_backup_retires_known_legacy_directory(self):
+        legacy = self.root.parent / (self.root.name + "-backups")
+        legacy.mkdir()
+        old = legacy / "20200101T000000000000Z.tar.gz"
+        kit.create_archive(self.root, old)
+        kit.private_write(str(old) + ".sha256", kit.digest_file(old) + "  " + old.name + "\n")
+        code = legacy / "code-20200101T000000000001Z.tar.gz"
+        with tarfile.open(code, "w:gz") as archive:
+            for name in kit.PROGRAM_FILES:
+                archive.add(self.root / name, arcname=name)
+        kit.private_write(str(code) + ".sha256", kit.digest_file(code) + "  " + code.name + "\n")
+        with mock.patch.object(self.instance, "running", return_value=False):
+            latest, _ = self.instance.backup()
+        self.assertTrue(latest.is_file())
+        self.assertFalse(legacy.exists())
+
+    def test_backup_rotation_leaves_unrecognized_files_alone(self):
+        directory = self.root / "backups"
+        directory.mkdir()
+        kit.private_write(directory / "notes.txt", "keep")
+        kit.private_write(directory / "20200101T000000000000Z.tar.gz", "unknown")
+        with mock.patch.object(self.instance, "running", return_value=False):
+            self.instance.backup()
+        self.assertEqual((directory / "notes.txt").read_text(), "keep")
+        self.assertEqual((directory / "20200101T000000000000Z.tar.gz").read_text(), "unknown")
+
+    def test_restore_from_only_backup_keeps_pre_restore_state_as_latest_backup(self):
+        marker = self.root / "data/marker"
+        kit.private_write(marker, "old state")
+        with mock.patch.object(self.instance, "running", return_value=False):
+            source, _ = self.instance.backup()
+            kit.private_write(marker, "current state")
+            with mock.patch.object(kit.Kit, "compose"), mock.patch.object(kit.Kit, "stop"):
+                kit.restore_interactive(self.instance, str(source))
+        self.assertEqual(marker.read_text(), "old state")
+        self.assertFalse(source.exists())
+        backups = list((self.root / "backups").glob("*.tar.gz"))
+        self.assertEqual(len(backups), 1)
+        with tarfile.open(backups[0]) as archive:
+            self.assertEqual(archive.extractfile("data/marker").read(), b"current state")
 
     def test_uninstall_backs_up_and_only_removes_own_container_without_confirmation(self):
         with mock.patch.object(kit, "confirm", side_effect=AssertionError("unexpected confirmation")), mock.patch.object(self.instance, "backup") as backup, mock.patch.object(self.instance, "inspect"), mock.patch.object(self.instance, "compose") as compose:
@@ -437,7 +502,7 @@ class CodeUpdateTests(unittest.TestCase):
         self.commit("remote change")
         self.git(self.seed, "push")
 
-    def test_fast_forward_preserves_private_data_and_snapshots_previous_code(self):
+    def test_fast_forward_preserves_private_data_and_code_history_without_extra_archives(self):
         private = {".env": b"KEEP-SECRET", "settings.json": b"KEEP-SETTINGS", "data/active.yaml": b"KEEP-DATA"}
         for name, content in private.items():
             (self.root / name).parent.mkdir(parents=True, exist_ok=True)
@@ -447,14 +512,9 @@ class CodeUpdateTests(unittest.TestCase):
         self.assertNotEqual(self.git(self.root, "rev-parse", "HEAD").strip(), self.before)
         for name, content in private.items():
             self.assertEqual((self.root / name).read_bytes(), content)
-        snapshots = list((self.root.parent / "project-backups").glob("code-*.tar.gz"))
-        self.assertEqual(len(snapshots), 1)
-        with tarfile.open(snapshots[0]) as archive:
-            self.assertEqual(archive.extractfile("README.md").read(), (ROOT / "README.md").read_bytes())
-            self.assertNotIn(".env", archive.getnames())
-        self.assertIn(kit.digest_file(snapshots[0]), Path(str(snapshots[0]) + ".sha256").read_text())
-        if os.name == "posix":
-            self.assertEqual(snapshots[0].stat().st_mode & 0o777, 0o600)
+        self.assertFalse((self.root / "backups").exists())
+        self.assertFalse((self.root.parent / "project-backups").exists())
+        self.assertEqual(self.git(self.root, "show", self.before + ":README.md"), (ROOT / "README.md").read_text("utf-8"))
 
     def test_no_remote_change_does_not_make_code_backup(self):
         self.assertFalse(kit.sync_code(self.root))

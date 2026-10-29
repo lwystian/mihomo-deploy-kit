@@ -539,25 +539,61 @@ class Kit:
                 child.wait(timeout=10)
 
     def backup(self, resume=True):
-        directory = self.root.parent / (self.root.name + "-backups")
+        directory = self.root / "backups"
         if directory.is_symlink():
             raise KitError("备份目录不能是符号链接。")
         directory.mkdir(mode=0o700, exist_ok=True)
         os.chmod(directory, 0o700)
+        path = directory / (timestamp() + ".tar.gz")
+        if path.exists() or path.is_symlink():
+            raise KitError("备份目标已存在，未覆盖。")
         was_running = self.running()
         print("备份：短暂停止本项目容器以获得一致快照，其他项目不受影响。")
         if was_running:
             self.stop()
-        path = directory / (timestamp() + ".tar.gz")
         try:
             create_archive(self.root, path)
             verify_archive(path)
             private_write(str(path) + ".sha256", digest_file(path) + "  " + path.name + "\n")
+        except Exception:
+            path.unlink(missing_ok=True)
+            Path(str(path) + ".sha256").unlink(missing_ok=True)
+            raise
         finally:
             if was_running and resume:
                 self.up_checked()
+        self.prune_backups(path)
         print("备份已验证：" + str(path))
         return path, was_running
+
+    def prune_backups(self, keep):
+        # 只清理本部署生成且校验可识别的快照；新快照完成前不动旧文件。
+        for directory in (self.root / "backups", self.root.parent / (self.root.name + "-backups")):
+            if directory.is_symlink() or not directory.is_dir():
+                continue
+            for archive in directory.iterdir():
+                if archive == keep or archive.is_symlink() or not archive.is_file() or not re.fullmatch(r"(?:code-)?\d{8}T\d{12}Z\.tar\.gz", archive.name):
+                    continue
+                checksum = Path(str(archive) + ".sha256")
+                if checksum.is_symlink() or not checksum.is_file():
+                    continue
+                try:
+                    if checksum.read_text("utf-8").split()[0] != digest_file(archive):
+                        continue
+                    with tarfile.open(archive, "r:gz") as content:
+                        if archive.name.startswith("code-"):
+                            if not set(PROGRAM_FILES).issubset(content.getnames()):
+                                continue
+                        else:
+                            owner = json.load(content.extractfile("settings.json"))
+                            if owner.get("kit") != "mihomo-deploy-kit" or owner.get("project") != self.settings["project"]:
+                                continue
+                except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError, tarfile.TarError):
+                    continue
+                archive.unlink()
+                checksum.unlink()
+            if directory != self.root / "backups" and not any(directory.iterdir()):
+                directory.rmdir()
 
     def report(self):
         s = self.settings
@@ -755,7 +791,7 @@ def choose_profile(kit):
     print("配置已激活，内核及代理认证验证通过。")
 
 
-def restore_transaction(kit, path, start=True):
+def restore_transaction(kit, path, start=True, backup_current=False):
     with tempfile.TemporaryDirectory(prefix=".restore-stage-", dir=str(kit.root.parent)) as temporary:
         staging = Path(temporary)
         os.chmod(staging, 0o700)
@@ -765,6 +801,9 @@ def restore_transaction(kit, path, start=True):
             raise KitError("备份属于另一个 Compose 项目，拒绝交叉恢复。")
         check_policy(safe_yaml((staging / "data/active.yaml").read_text("utf-8")), candidate.settings)
         candidate.compose("config", "--quiet")
+        if backup_current:
+            backup_path, start = kit.backup()
+            print("当前状态已备份：" + str(backup_path))
         quarantine = kit.root / (".restore-" + timestamp())
         quarantine.mkdir(mode=0o700)
         kit.stop()
@@ -805,11 +844,8 @@ def restore_interactive(kit, path=None):
         print("已取消恢复，当前配置保持不变。")
         return
     path = Path(selected).expanduser().resolve()
-    verify_archive(path)
     print("将恢复：" + str(path))
-    backup_path, running = kit.backup()
-    print("当前状态已备份：" + str(backup_path))
-    restore_transaction(kit, path, start=running)
+    restore_transaction(kit, path, backup_current=True)
 
 
 def change_auth(kit):
@@ -912,20 +948,11 @@ def sync_code(root):
         compile(git("show", target + ":kit.py"), "kit.py", "exec")
     except (SyntaxError, ValueError):
         raise KitError("远程程序与当前 Python 不兼容或语法无效，未更新。请先检查版本要求。")
-    directory = root.parent / (root.name + "-backups")
-    if directory.is_symlink():
-        raise KitError("备份目录不能是符号链接。")
-    directory.mkdir(mode=0o700, exist_ok=True)
-    os.chmod(directory, 0o700)
-    snapshot = directory / ("code-" + timestamp() + ".tar.gz")
-    git("archive", "--format=tar.gz", "--output=" + str(snapshot), before)
-    os.chmod(snapshot, 0o600)
-    private_write(str(snapshot) + ".sha256", digest_file(snapshot) + "  " + snapshot.name + "\n")
     try:
         git("merge", "--ff-only", "--no-edit", "--no-overwrite-ignore", target)
     except KitError:
         raise KitError("代码快进失败，未强制覆盖文件，未更新容器。请检查本地文件冲突和 Git 状态。")
-    print("代码已更新：%s → %s；原代码备份：%s" % (before[:12], target[:12], snapshot), flush=True)
+    print("代码已更新：%s → %s；旧代码保留在 Git 历史。" % (before[:12], target[:12]), flush=True)
     return True
 
 

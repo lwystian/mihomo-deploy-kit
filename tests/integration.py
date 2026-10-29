@@ -210,8 +210,10 @@ def run():
             kit.private_write(marker, "original")
             archive, _ = instance.backup()
             kit.private_write(marker, "changed")
-            kit.restore_transaction(instance, archive)
+            kit.restore_interactive(instance, str(archive))
             assert marker.read_text() == "original"
+            assert not archive.exists()
+            assert len(list((root / "backups").glob("*.tar.gz"))) == 1
             instance.doctor()
             print("PASS 真实冷备份、校验、恢复和容器重新启动")
             for user, password in (("ci-user", "123"), ("中文 user@example", " a:@$'\\ "),
@@ -258,7 +260,7 @@ def run():
                 instance.compose("down", "--timeout", "15")
             service.shutdown()
             service.server_close()
-            backup_dir = root.parent / (root.name + "-backups")
+            backup_dir = root / "backups"
             # TemporaryDirectory 的父目录整体属于本测试，随退出自动清理。
             assert backup_dir.is_relative_to(Path(temporary)) if hasattr(backup_dir, "is_relative_to") else str(backup_dir).startswith(temporary)
 
