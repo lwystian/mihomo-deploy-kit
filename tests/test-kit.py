@@ -244,6 +244,23 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(ports[1].startswith("127.0.0.1:"))
         self.assertFalse(any("/udp" in port for port in ports))
 
+    def test_proxy_probe_understands_upstream_rejections_without_accepting_anonymous(self):
+        def fake_socket(chunks):
+            stream = mock.MagicMock()
+            stream.__enter__.return_value = stream
+            stream.recv.side_effect = chunks
+            return stream
+        streams = [fake_socket([b"HTTP/1.1 407 Proxy Authentication Required\r\n"]),
+                   fake_socket([b"HTTP/1.1 403 Forbidden\r\n"]), fake_socket([b"\x05\x02"]),
+                   fake_socket([b"\x05\x02", b"\x01\x01"]), fake_socket([b"\x05\x02", b"\x01\x00"])]
+        with mock.patch.object(kit.socket, "create_connection", side_effect=streams):
+            self.instance.proxy_auth_check()
+        streams = [fake_socket([b"HTTP/1.1 407 Required\r\n"]),
+                   fake_socket([b"HTTP/1.1 403 Forbidden\r\n"]), fake_socket([b"\x05\x00"])]
+        with mock.patch.object(kit.socket, "create_connection", side_effect=streams):
+            with self.assertRaises(kit.KitError):
+                self.instance.proxy_auth_check()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

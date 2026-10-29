@@ -378,11 +378,14 @@ class Kit:
                         header = b"Proxy-Authorization: Basic " + base64.b64encode(credential.encode()) + b"\r\n"
                     stream.sendall(b"GET http://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\n" + header + b"Connection: close\r\n\r\n")
                     status = stream.recv(512).split(b"\r\n", 1)[0].split()
-                    if len(status) < 2 or status[1] != b"407":
+                    expected = (b"407",) if credential is None else (b"403", b"407")
+                    if len(status) < 2 or status[1] not in expected:
                         raise KitError("HTTP 代理未正确拒绝无凭据或错误凭据。")
             with socket.create_connection(address, timeout=5) as stream:
                 stream.sendall(b"\x05\x01\x00")
-                if receive(stream, 2) != b"\x05\xff":
+                # 上游在启用认证时返回 0x02，要求账号密码，即使客户端只提议匿名；
+                # 这同样拒绝匿名，不应错误地要求它必须返回 0xff。
+                if receive(stream, 2) not in (b"\x05\xff", b"\x05\x02"):
                     raise KitError("SOCKS5 接受了匿名认证。")
             for user, password, success in (("invalid-user", "invalid-password", False),
                                            (self.settings["proxy_user"], self.settings["proxy_password"], True)):

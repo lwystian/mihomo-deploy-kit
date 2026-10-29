@@ -185,7 +185,7 @@ def run():
                  mock.patch.object(kit, "new_password", return_value=secrets.token_urlsafe(24)):
                 kit.change_auth(instance)
             instance.doctor()
-            assert proxy_http(instance, target, "ci-user", old_password)[0] == 407
+            assert proxy_http(instance, target, "ci-user", old_password)[0] in (403, 407)
             print("PASS 修改代理凭据，旧密码被拒绝")
             kit.update(instance)
             print("PASS 固定版本更新、备份与启动验证")
