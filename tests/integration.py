@@ -117,6 +117,18 @@ def run():
             kit.private_write(root / name, (ROOT / name).read_bytes())
             if name.endswith(".sh"):
                 os.chmod(root / name, 0o700)
+        kit.private_write(root / ".gitignore", (ROOT / ".gitignore").read_bytes())
+        def git(directory, *arguments):
+            return kit.process(["git"] + list(arguments), cwd=directory)
+        git(root, "init", "-b", "main")
+        git(root, "config", "user.name", "Deployment Test")
+        git(root, "config", "user.email", "test@example.invalid")
+        git(root, "add", ".")
+        git(root, "commit", "-m", "initial test deployment")
+        remote = Path(temporary) / "remote.git"
+        git(root, "clone", "--bare", str(root), str(remote))
+        git(root, "remote", "add", "origin", str(remote))
+        git(root, "push", "-u", "origin", "main")
         control, api, proxy = unused_ports()
         s = {"schema": 1, "kit": "mihomo-deploy-kit", "project": "mkit-ci-" + uuid.uuid4().hex[:10],
              "image": kit.IMAGE, "control_port": control, "api_port": api, "proxy_port": proxy,
@@ -203,8 +215,22 @@ def run():
                 assert proxy_http(instance, target, old_user, old_password)[0] in (403, 407)
                 assert proxy_http(instance, target, user, password)[0] == 200
             print("PASS 单字符/短密码、中文和特殊符号、255 字节密码的真实 HTTP/SOCKS5 认证，旧凭据失效")
-            cli("update")
-            print("PASS ./deploy.sh update 实际更新、备份与启动验证")
+            publisher = Path(temporary) / "publisher"
+            git(root, "clone", "-b", "main", str(remote), str(publisher))
+            git(publisher, "config", "user.name", "Deployment Test")
+            git(publisher, "config", "user.email", "test@example.invalid")
+            new_program = (publisher / "kit.py").read_text(encoding="utf-8").replace(
+                'def update(kit, image=None):\n', 'def update(kit, image=None):\n    print("UPDATED-CODE-EXECUTED")\n', 1)
+            kit.private_write(publisher / "kit.py", new_program)
+            git(publisher, "add", "kit.py")
+            git(publisher, "commit", "-m", "test new updater code")
+            git(publisher, "push")
+            before_update = json.loads((root / "settings.json").read_text())
+            assert "UPDATED-CODE-EXECUTED" in cli("update")
+            assert json.loads((root / "settings.json").read_text()) == before_update
+            assert marker.read_text() == "original"
+            assert git(root, "rev-parse", "HEAD") == git(publisher, "rev-parse", "HEAD")
+            print("PASS ./deploy.sh update 自动拉取代码、执行新版、备份、镜像验证，凭据与数据保持")
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
                 if instance.inspect()["State"].get("Health", {}).get("Status") == "healthy":

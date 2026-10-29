@@ -135,6 +135,7 @@ class DeploymentTests(unittest.TestCase):
                  mock.patch.object(kit.platform, "system", return_value="Linux"), \
                  mock.patch.object(kit.os, "geteuid", return_value=0, create=True), \
                  mock.patch.object(kit, "deployment_lock", return_value=contextlib.nullcontext()), \
+                 mock.patch.object(kit, "sync_code", return_value=False), \
                  mock.patch.object(kit, "dispatch") as dispatch, mock.patch.object(kit, "install") as install:
                 kit.main()
                 self.assertEqual(dispatch.call_args[0][1].command, command)
@@ -379,6 +380,158 @@ class DeploymentTests(unittest.TestCase):
         with mock.patch.object(kit.socket, "create_connection", side_effect=streams):
             with self.assertRaises(kit.KitError):
                 self.instance.proxy_auth_check()
+
+
+@unittest.skipUnless(shutil.which("git"), "代码更新测试需要 Git")
+class CodeUpdateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.remote, self.seed, self.root = base / "remote.git", base / "seed", base / "project"
+        subprocess.run(["git", "init", "--bare", str(self.remote)], check=True, capture_output=True)
+        self.seed.mkdir()
+        self.git(self.seed, "init", "-b", "main")
+        self.git(self.seed, "config", "user.name", "Deployment Test")
+        self.git(self.seed, "config", "user.email", "test@example.invalid")
+        for name in kit.PROGRAM_FILES + ("deploy.sh", ".gitignore", ".gitattributes"):
+            shutil.copy2(ROOT / name, self.seed / name)
+        self.commit("initial")
+        self.git(self.seed, "remote", "add", "origin", str(self.remote))
+        self.git(self.seed, "push", "-u", "origin", "main")
+        subprocess.run(["git", "clone", "-b", "main", str(self.remote), str(self.root)],
+                       check=True, capture_output=True)
+        self.before = self.git(self.root, "rev-parse", "HEAD").strip()
+
+    def git(self, root, *arguments):
+        result = subprocess.run(["git", "-c", "safe.directory=" + root.as_posix()] + list(arguments),
+                                cwd=root, check=True, capture_output=True, text=True, encoding="utf-8")
+        return result.stdout
+
+    def commit(self, message):
+        self.git(self.seed, "add", "-A")
+        self.git(self.seed, "commit", "-m", message)
+
+    def publish(self, name="README.md", content="new code\n"):
+        (self.seed / name).write_text(content, encoding="utf-8")
+        self.commit("remote change")
+        self.git(self.seed, "push")
+
+    def test_fast_forward_preserves_private_data_and_snapshots_previous_code(self):
+        private = {".env": b"KEEP-SECRET", "settings.json": b"KEEP-SETTINGS", "data/active.yaml": b"KEEP-DATA"}
+        for name, content in private.items():
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_bytes(content)
+        self.publish()
+        self.assertTrue(kit.sync_code(self.root))
+        self.assertNotEqual(self.git(self.root, "rev-parse", "HEAD").strip(), self.before)
+        for name, content in private.items():
+            self.assertEqual((self.root / name).read_bytes(), content)
+        snapshots = list((self.root.parent / "project-backups").glob("code-*.tar.gz"))
+        self.assertEqual(len(snapshots), 1)
+        with tarfile.open(snapshots[0]) as archive:
+            self.assertEqual(archive.extractfile("README.md").read(), (ROOT / "README.md").read_bytes())
+            self.assertNotIn(".env", archive.getnames())
+        self.assertIn(kit.digest_file(snapshots[0]), Path(str(snapshots[0]) + ".sha256").read_text())
+        if os.name == "posix":
+            self.assertEqual(snapshots[0].stat().st_mode & 0o777, 0o600)
+
+    def test_no_remote_change_does_not_make_code_backup(self):
+        self.assertFalse(kit.sync_code(self.root))
+        self.assertFalse((self.root.parent / "project-backups").exists())
+
+    def test_dirty_code_is_not_overwritten(self):
+        self.publish()
+        (self.root / "README.md").write_text("my local edits", encoding="utf-8")
+        with self.assertRaisesRegex(kit.KitError, "本地修改"):
+            kit.sync_code(self.root)
+        self.assertEqual((self.root / "README.md").read_text(), "my local edits")
+        self.assertEqual(self.git(self.root, "rev-parse", "HEAD").strip(), self.before)
+
+    def test_diverged_branch_is_not_reset_or_merged(self):
+        self.publish()
+        self.git(self.root, "config", "user.name", "Deployment Test")
+        self.git(self.root, "config", "user.email", "test@example.invalid")
+        (self.root / "local.txt").write_text("local commit", encoding="utf-8")
+        self.git(self.root, "add", "local.txt")
+        self.git(self.root, "commit", "-m", "local commit")
+        local_head = self.git(self.root, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(kit.KitError, "快进"):
+            kit.sync_code(self.root)
+        self.assertEqual(self.git(self.root, "rev-parse", "HEAD"), local_head)
+
+    def test_untracked_collision_is_preserved(self):
+        self.publish("extra.txt", "remote version")
+        (self.root / "extra.txt").write_text("local version", encoding="utf-8")
+        with self.assertRaisesRegex(kit.KitError, "快进失败"):
+            kit.sync_code(self.root)
+        self.assertEqual((self.root / "extra.txt").read_text(), "local version")
+        self.assertEqual(self.git(self.root, "rev-parse", "HEAD").strip(), self.before)
+
+    def test_ignored_local_file_collision_is_preserved(self):
+        (self.seed / "private.log").write_text("remote version", encoding="utf-8")
+        self.git(self.seed, "add", "-f", "private.log")
+        self.git(self.seed, "commit", "-m", "track ignored path")
+        self.git(self.seed, "push")
+        (self.root / "private.log").write_text("local private content", encoding="utf-8")
+        with self.assertRaisesRegex(kit.KitError, "快进失败"):
+            kit.sync_code(self.root)
+        self.assertEqual((self.root / "private.log").read_text(), "local private content")
+
+    def test_remote_runtime_files_are_rejected(self):
+        (self.seed / ".env").write_text("remote secret", encoding="utf-8")
+        self.git(self.seed, "add", "-f", ".env")
+        self.git(self.seed, "commit", "-m", "unsafe runtime path")
+        self.git(self.seed, "push")
+        (self.root / ".env").write_text("private secret", encoding="utf-8")
+        with self.assertRaisesRegex(kit.KitError, "运行配置或数据"):
+            kit.sync_code(self.root)
+        self.assertEqual((self.root / ".env").read_text(), "private secret")
+
+    def test_invalid_new_python_is_rejected_before_merge(self):
+        self.publish("kit.py", "invalid python !")
+        with self.assertRaisesRegex(kit.KitError, "语法无效"):
+            kit.sync_code(self.root)
+        self.assertEqual(self.git(self.root, "rev-parse", "HEAD").strip(), self.before)
+
+    def test_missing_required_file_is_rejected(self):
+        (self.seed / "deploy.sh").unlink()
+        self.commit("remove entrypoint")
+        self.git(self.seed, "push")
+        with self.assertRaisesRegex(kit.KitError, "缺少必要"):
+            kit.sync_code(self.root)
+        self.assertTrue((self.root / "deploy.sh").is_file())
+
+    def test_fetch_failure_does_not_change_code(self):
+        self.git(self.root, "remote", "set-url", "origin", str(self.root.parent / "missing.git"))
+        with self.assertRaisesRegex(kit.KitError, "拉取远程代码失败"):
+            kit.sync_code(self.root)
+        self.assertEqual(self.git(self.root, "rev-parse", "HEAD").strip(), self.before)
+
+    def test_nongit_directory_requires_explicit_image_only(self):
+        plain = self.root.parent / "plain"
+        plain.mkdir()
+        with self.assertRaisesRegex(kit.KitError, "不是 Git"):
+            kit.sync_code(plain)
+
+    def test_update_before_install_skips_containers_and_reexecs_new_code(self):
+        for changed in (False, True):
+            with self.subTest(changed=changed), \
+                 mock.patch.object(sys, "argv", ["deploy.sh", "--root", str(self.root), "update"]), \
+                 mock.patch.object(kit.platform, "system", return_value="Linux"), \
+                 mock.patch.object(kit.os, "geteuid", return_value=0, create=True), \
+                 mock.patch.object(kit, "deployment_lock", return_value=contextlib.nullcontext()), \
+                 mock.patch.object(kit, "sync_code", return_value=changed), \
+                 mock.patch.object(kit, "reexec_update") as reexec, mock.patch.object(kit, "dispatch") as dispatch:
+                kit.main()
+                self.assertEqual(reexec.call_count, int(changed))
+                dispatch.assert_not_called()
+
+    def test_reexec_uses_updated_python_and_does_not_pull_recursively(self):
+        with mock.patch.object(kit.os, "execv") as execute:
+            kit.reexec_update(self.root, kit.IMAGE)
+        execute.assert_called_once_with(sys.executable, [sys.executable, str(self.root / "kit.py"),
+            "--root", str(self.root), "update", "--image-only", "--image", kit.IMAGE])
 
 
 if __name__ == "__main__":

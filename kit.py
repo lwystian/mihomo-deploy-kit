@@ -871,6 +871,79 @@ def update(kit, image=None):
     print("使用固定版本，不会自动切换 latest，也不会单独替换上游内置内核。")
 
 
+def sync_code(root):
+    """只允许干净仓库快进更新；运行数据不参与 Git 操作。"""
+    root = Path(root).resolve()
+    if not shutil.which("git"):
+        raise KitError("代码更新需要 Git，请先通过系统包管理器安装。仅检查镜像可用 update --image-only。")
+    if not (root / ".git").exists():
+        raise KitError("当前目录不是 Git 克隆的项目，不能自动拉取代码。请在克隆目录部署；仅更新镜像可用 update --image-only。")
+
+    def git(*arguments, timeout=120):
+        # sudo 管理用户克隆的目录时，只在本次命令信任明确的项目目录。
+        return process(["git", "-c", "safe.directory=" + root.as_posix()] + list(arguments),
+                       cwd=root, timeout=timeout).strip()
+
+    if Path(git("rev-parse", "--show-toplevel")).resolve() != root:
+        raise KitError("部署目录必须是独立仓库的根目录，已停止代码更新。")
+    try:
+        branch = git("symbolic-ref", "--quiet", "--short", "HEAD")
+    except KitError:
+        raise KitError("当前处于分离 HEAD，不能自动更新。请先切换到设置了 upstream 的分支。")
+    remote = git("for-each-ref", "--format=%(upstream:remotename)", "refs/heads/" + branch)
+    if not remote or remote == "." or remote.startswith("-"):
+        raise KitError("当前分支未设置远程跟踪分支，请先设置 Git upstream。")
+    if git("status", "--porcelain", "--untracked-files=no"):
+        raise KitError("项目代码有本地修改，未覆盖。请先审查并提交或另存修改，再运行 update；.env、settings.json 和 data/ 不需要提交。")
+    print("检查远程代码更新……", flush=True)
+    try:
+        git("fetch", "--quiet", "--", remote, timeout=180)
+    except KitError:
+        raise KitError("拉取远程代码失败或超时，未更新代码或容器。请检查 Git 网络及访问权限后重试。")
+    before = git("rev-parse", "HEAD")
+    target = git("rev-parse", "--verify", "@{upstream}^{commit}")
+    if before == target:
+        print("项目代码已是当前跟踪分支的最新版本。")
+        return False
+    if git("merge-base", before, target) != before:
+        raise KitError("本地分支与远程不是可快进关系，未合并或覆盖。请先人工审查 Git 分支。")
+    names = git("ls-tree", "-r", "--name-only", "-z", target).split("\0")
+    protected = (".env", "settings.json", "data", "backups", ".install.lock")
+    if any(name == item or name.startswith(item + "/") for name in names for item in protected):
+        raise KitError("远程版本包含运行配置或数据路径，拒绝自动更新以保护现有数据。")
+    if not set(PROGRAM_FILES + ("deploy.sh",)).issubset(names):
+        raise KitError("远程版本缺少必要项目文件，未更新。")
+    try:
+        compile(git("show", target + ":kit.py"), "kit.py", "exec")
+    except (SyntaxError, ValueError):
+        raise KitError("远程程序与当前 Python 不兼容或语法无效，未更新。请先检查版本要求。")
+    directory = root.parent / (root.name + "-backups")
+    if directory.is_symlink():
+        raise KitError("备份目录不能是符号链接。")
+    directory.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(directory, 0o700)
+    snapshot = directory / ("code-" + timestamp() + ".tar.gz")
+    git("archive", "--format=tar.gz", "--output=" + str(snapshot), before)
+    os.chmod(snapshot, 0o600)
+    private_write(str(snapshot) + ".sha256", digest_file(snapshot) + "  " + snapshot.name + "\n")
+    try:
+        git("merge", "--ff-only", "--no-edit", "--no-overwrite-ignore", target)
+    except KitError:
+        raise KitError("代码快进失败，未强制覆盖文件，未更新容器。请检查本地文件冲突和 Git 状态。")
+    print("代码已更新：%s → %s；原代码备份：%s" % (before[:12], target[:12], snapshot), flush=True)
+    return True
+
+
+def reexec_update(root, image=None):
+    # 离开旧进程的锁后，执行新代码并重新加锁，避免仍使用内存中的旧实现。
+    arguments = [sys.executable, str(root / "kit.py"), "--root", str(root), "update", "--image-only"]
+    if image:
+        arguments += ["--image", image]
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, arguments)
+
+
 def published_ports():
     ids = process(["docker", "ps", "-q"]).split()
     if not ids:
@@ -1009,7 +1082,8 @@ HELP = """用法：./deploy.sh [命令] [参数]
   doctor                     配置、挂载、网络及真实认证检查
   logs [-f]                  查看脱敏日志，-f 持续跟踪
   start / stop / restart     仅操作本项目容器
-  update [--image 官方版本]   先备份，拉取镜像并验证；失败恢复
+  update [--image 官方版本]   自动拉取代码，再备份并更新镜像、验证服务
+  update --image-only        跳过代码更新，仅备份并检查镜像
   backup                     短暂停止本项目并创建完整校验备份
   restore [备份路径]          验证备份，二次确认，先备份当前状态
   import-subscription        隐藏输入 URL、下载、校验、可选激活
@@ -1028,6 +1102,7 @@ def main():
     parser.add_argument("command", nargs="?", default="install")
     parser.add_argument("argument", nargs="?")
     parser.add_argument("--image")
+    parser.add_argument("--image-only", action="store_true", help="update 时跳过 Git 代码更新")
     parser.add_argument("-f", "--follow", action="store_true")
     args = parser.parse_args()
     if args.command == "help":
@@ -1037,6 +1112,19 @@ def main():
         install(args.root or SOURCE)
         return
     root = Path(args.root or SOURCE).resolve()
+    if args.command == "update":
+        if platform.system() != "Linux" or os.geteuid() != 0:
+            raise KitError("更新操作请在 Linux 服务器上以 root 或 sudo 运行。")
+        if args.image:
+            validate_image(args.image)
+        if not args.image_only:
+            with deployment_lock(root):
+                changed = sync_code(root)
+            if changed:
+                return reexec_update(root, args.image)
+        if not (root / "settings.json").is_file():
+            print("脚本检查完成；尚未部署服务，请运行 ./deploy.sh 开始安装。")
+            return
     if not (root / "settings.json").is_file():
         raise KitError("目录没有本套件部署配置，请先在项目目录执行 ./deploy.sh。")
     need_yaml()
