@@ -926,7 +926,7 @@ def sync_code(root):
         raise KitError("当前分支未设置远程跟踪分支，请先设置 Git upstream。")
     if git("status", "--porcelain", "--untracked-files=no"):
         raise KitError("项目代码有本地修改，未覆盖。请先审查并提交或另存修改，再运行 update；.env、settings.json 和 data/ 不需要提交。")
-    print("检查远程代码更新……", flush=True)
+    print("检查更新……", flush=True)
     try:
         git("fetch", "--quiet", "--", remote, timeout=180)
     except KitError:
@@ -934,7 +934,7 @@ def sync_code(root):
     before = git("rev-parse", "HEAD")
     target = git("rev-parse", "--verify", "@{upstream}^{commit}")
     if before == target:
-        print("项目代码已是当前跟踪分支的最新版本。")
+        print("项目文件已是最新版。")
         return False
     if git("merge-base", before, target) != before:
         raise KitError("本地分支与远程不是可快进关系，未合并或覆盖。请先人工审查 Git 分支。")
@@ -952,7 +952,7 @@ def sync_code(root):
         git("merge", "--ff-only", "--no-edit", "--no-overwrite-ignore", target)
     except KitError:
         raise KitError("代码快进失败，未强制覆盖文件，未更新容器。请检查本地文件冲突和 Git 状态。")
-    print("代码已更新：%s → %s；旧代码保留在 Git 历史。" % (before[:12], target[:12]), flush=True)
+    print("项目文件已更新。", flush=True)
     return True
 
 

@@ -484,7 +484,7 @@ class CodeUpdateTests(unittest.TestCase):
         self.commit("initial")
         self.git(self.seed, "remote", "add", "origin", str(self.remote))
         self.git(self.seed, "push", "-u", "origin", "main")
-        subprocess.run(["git", "clone", "-b", "main", str(self.remote), str(self.root)],
+        subprocess.run(["git", "clone", "--depth", "1", "--no-tags", "--no-local", "-b", "main", str(self.remote), str(self.root)],
                        check=True, capture_output=True)
         self.before = self.git(self.root, "rev-parse", "HEAD").strip()
 
@@ -503,6 +503,7 @@ class CodeUpdateTests(unittest.TestCase):
         self.git(self.seed, "push")
 
     def test_fast_forward_preserves_private_data_and_code_history_without_extra_archives(self):
+        self.assertEqual(self.git(self.root, "rev-parse", "--is-shallow-repository").strip(), "true")
         private = {".env": b"KEEP-SECRET", "settings.json": b"KEEP-SETTINGS", "data/active.yaml": b"KEEP-DATA"}
         for name, content in private.items():
             (self.root / name).parent.mkdir(parents=True, exist_ok=True)
